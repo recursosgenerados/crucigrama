@@ -35,6 +35,12 @@
             overflow: hidden;
         }
 
+        #preview-canvas {
+            display: block;
+            image-rendering: -webkit-optimize-contrast;
+            image-rendering: crisp-edges;
+        }
+
         /* Make panel handle obvious and unselectable */
         .drag-handle {
             cursor: grab;
@@ -448,12 +454,15 @@ DISEÑO: Proceso de idear la parte visual</textarea>
             targetCtx.save();
             targetCtx.scale(dprScale, dprScale);
             
+            targetCtx.imageSmoothingEnabled = true;
+            targetCtx.imageSmoothingQuality = 'high';
+
             // Background
             targetCtx.fillStyle = '#ffffff';
             targetCtx.fillRect(0, 0, layout.width, layout.height);
 
             // Draw Cells
-            targetCtx.lineWidth = 1;
+            targetCtx.lineWidth = 1.5;
             layout.cells.forEach(c => {
                 targetCtx.fillStyle = '#ffffff';
                 targetCtx.fillRect(c.px, c.py, CONFIG.CELL_SIZE, CONFIG.CELL_SIZE);
@@ -548,16 +557,20 @@ DISEÑO: Proceso de idear la parte visual</textarea>
             
             const showLetters = DOM.toggleSolution.checked;
             
-            // Setup High DPI Canvas
-            const dpr = window.devicePixelRatio || 1;
-            DOM.canvas.width = currentLayoutData.width * dpr;
-            DOM.canvas.height = currentLayoutData.height * dpr;
+            // Setup High DPI Canvas (5K Super Sampling Scale)
+            const deviceDpr = window.devicePixelRatio || 1;
+            const scale5K = Math.max(4, Math.ceil(5120 / currentLayoutData.width)); // Target 5K pixel width
+            const renderScale = Math.max(deviceDpr, scale5K);
+
+            DOM.canvas.width = Math.round(currentLayoutData.width * renderScale);
+            DOM.canvas.height = Math.round(currentLayoutData.height * renderScale);
+            
             DOM.canvas.style.width = `${currentLayoutData.width}px`;
             DOM.canvas.style.height = `${currentLayoutData.height}px`;
 
-            // Clear and render
+            // Clear and render in Ultra 5K High Quality
             ctx.clearRect(0, 0, DOM.canvas.width, DOM.canvas.height);
-            renderToCanvas(ctx, currentLayoutData, showLetters, dpr);
+            renderToCanvas(ctx, currentLayoutData, showLetters, renderScale);
         }
 
         /**
@@ -569,8 +582,8 @@ DISEÑO: Proceso de idear la parte visual</textarea>
             // Target 300 DPI approx (Scale internally by factor of 4)
             const SCALE_FACTOR = 4;
             const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = currentLayoutData.width * SCALE_FACTOR;
-            tempCanvas.height = currentLayoutData.height * SCALE_FACTOR;
+            tempCanvas.width = Math.round(currentLayoutData.width * SCALE_FACTOR);
+            tempCanvas.height = Math.round(currentLayoutData.height * SCALE_FACTOR);
             const tempCtx = tempCanvas.getContext('2d');
 
             // Force letters hidden for export
@@ -623,15 +636,23 @@ DISEÑO: Proceso de idear la parte visual</textarea>
         DOM.btnExportSVG.addEventListener('click', handleExportSVG);
 
         /**
-         * Panel Dragging Logic
+         * Optimized 60FPS Lag-Free Panel Dragging Engine
          */
         let isDragging = false;
         let dragOffsetX = 0;
         let dragOffsetY = 0;
+        let nextX = 0;
+        let nextY = 0;
+        let dragRafId = null;
 
         DOM.panelHeader.addEventListener('mousedown', (e) => {
             if (e.target === DOM.btnCollapse || DOM.btnCollapse.contains(e.target)) return;
             isDragging = true;
+            
+            // Temporarily disable CSS transitions during drag to remove movement rubberbanding/lag
+            DOM.panel.classList.remove('transition-all', 'duration-300');
+            document.body.style.userSelect = 'none';
+
             const rect = DOM.panel.getBoundingClientRect();
             dragOffsetX = e.clientX - rect.left;
             dragOffsetY = e.clientY - rect.top;
@@ -639,23 +660,37 @@ DISEÑO: Proceso de idear la parte visual</textarea>
 
         document.addEventListener('mousemove', (e) => {
             if (!isDragging) return;
+
             let newX = e.clientX - dragOffsetX;
             let newY = e.clientY - dragOffsetY;
 
             // Keep within window bounds
             const maxX = window.innerWidth - DOM.panel.offsetWidth;
-            const maxY = window.innerHeight - 40; // Allow dragging by header
+            const maxY = window.innerHeight - 50;
             
-            newX = Math.max(0, Math.min(newX, maxX));
-            newY = Math.max(0, Math.min(newY, maxY));
+            nextX = Math.max(0, Math.min(newX, maxX));
+            nextY = Math.max(0, Math.min(newY, maxY));
 
-            DOM.panel.style.left = `${newX}px`;
-            DOM.panel.style.top = `${newY}px`;
-            DOM.panel.style.bottom = 'auto';
-            DOM.panel.style.right = 'auto';
+            // Throttle paints to screen refresh rate via requestAnimationFrame
+            if (!dragRafId) {
+                dragRafId = requestAnimationFrame(() => {
+                    DOM.panel.style.left = `${nextX}px`;
+                    DOM.panel.style.top = `${nextY}px`;
+                    DOM.panel.style.bottom = 'auto';
+                    DOM.panel.style.right = 'auto';
+                    dragRafId = null;
+                });
+            }
         });
 
-        document.addEventListener('mouseup', () => { isDragging = false; });
+        document.addEventListener('mouseup', () => {
+            if (isDragging) {
+                isDragging = false;
+                document.body.style.userSelect = '';
+                // Restore CSS transition for collapse/expand toggle animations
+                DOM.panel.classList.add('transition-all', 'duration-300');
+            }
+        });
 
         /**
          * Panel Collapse Logic
